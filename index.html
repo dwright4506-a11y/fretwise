@@ -821,12 +821,14 @@ body.sheet-open.sheet-mid #v-practise{padding-bottom:max(150px,55vh)}
 const $=s=>document.querySelector(s);
 /* ---------- storage (v32): failures reported, unreadable data kept, restored data validated ---------- */
 const FWV=1;
-const LS=(()=>{try{const s=window.localStorage,k='fw.__t';s.setItem(k,'1');s.removeItem(k);return s;}catch(e){return null;}})();
+/* v34: reading no longer depends on writing working (a full or locked store still shows your progress) */
+const RS=(()=>{try{return window.localStorage;}catch(e){return null;}})();
+const LS=(()=>{try{const s=RS,k='fw.__t';s.setItem(k,'1');s.removeItem(k);return s;}catch(e){return null;}})();
 const NOTES=[];let noteFn=null;
 function fwNote(msg,act){NOTES.push({msg,act});if(noteFn)noteFn();}
 let saveFailed=false;
 const store={
-  raw(k){try{return LS?LS.getItem(k):null;}catch(e){return null;}},
+  raw(k){try{return RS?RS.getItem(k):null;}catch(e){return null;}},
   put(k,txt){if(!LS)throw new Error('no storage');LS.setItem(k,txt);},
   keep(k,v){try{if(LS)LS.setItem(k+'.bad',v);}catch(e){}},
   get(k,d){const v=this.raw(k);if(v==null)return d;try{return JSON.parse(v);}catch(e){this.keep(k,v);return d;}},
@@ -865,11 +867,20 @@ function cleanLearn(o){const out=Object.assign({},LD);if(!isObj(o))return out;
     if(typeof v!==typeof LD[k]||(typeof v==='number'&&!Number.isFinite(v))||(typeof v==='string'&&!SAFE(v)))return;out[k]=v;});
   return out;}
 function readStats(){const r=store.raw('fw.stats');if(!r)return null;try{return cleanStats(JSON.parse(r));}catch(e){return null;}}
+let RECOVER=null;
+function amount(st){let n=0;try{Object.values(st.cells||{}).forEach(v=>{n+=num(v.n);});n+=50*Object.keys(isObj(st.path)?st.path:{}).length;}catch(e){}return n;}
+function amountTxt(st){let n=0;Object.values(st.cells||{}).forEach(v=>{n+=num(v.n);});const p=Object.keys(isObj(st.path)?st.path:{}).length;return `${n} answers${p?`, ${p} pathway step${p>1?'s':''} started`:''}`;}
 function loadStats(){const raw=store.raw('fw.stats');let st=null;
   if(raw!=null){try{st=cleanStats(JSON.parse(raw));}catch(e){st=null;}if(!st)store.keep('fw.stats',raw);}
   if(!st&&raw!=null){const b=store.raw('fw.stats.bak');try{st=b?cleanStats(JSON.parse(b)):null;}catch(e){st=null;}
     fwNote(st?'Your saved progress couldn’t be read, so Fretwise has loaded the last good copy from this device. The unreadable copy has been kept, not deleted.':'Your saved progress couldn’t be read. It has been kept, not deleted. If you have a backup code, restore it from Progress.','bk');}
   if(!st)st={cells:{},best:0};
+  /* v34: if progress looks empty or thin, look for a fuller saved copy anywhere in this page's storage */
+  try{const mine=amount(st);let best=null,bestN=mine;
+    const keys=[];for(let i=0;RS&&i<RS.length;i++)keys.push(RS.key(i));
+    keys.filter(k=>k&&k!=='fw.stats'&&k!=='fw.settings'&&k!=='fw.learn').forEach(k=>{const v=store.raw(k);if(!v||v.length>2e6)return;
+      try{const c=cleanStats(JSON.parse(v));if(c&&amount(c)>bestN){best=c;bestN=amount(c);}}catch(e){}});
+    if(best&&bestN>=Math.max(10,mine*1.5)){RECOVER=best;fwNote(`Your progress looks ${mine?'smaller than it should':'empty'}, but a fuller saved copy is on this device (${amountTxt(best)}).`,'rec');}}catch(e){}
   if(num(st.v)>FWV)fwNote('This progress was saved by a newer version of Fretwise. Copy a backup code from the newer version before using this one.','bk');
   return st;}
 /* two tabs: another tab's newer records are merged in rather than overwritten (the higher count, hurdle or later result wins) */
@@ -912,9 +923,12 @@ function runKeys(){if(RUNK)return RUNK;const k=new Set(['mode','strings','from',
 function persistS(){if(!(T&&T.prevS))return S;const k=runKeys();Object.keys(S).forEach(x=>{if(!k.has(x))T.prevS[x]=S[x];});return T.prevS;}
 const saveS=()=>store.set('fw.settings',persistS());
 let stExt=false,stBak=false;
+function keepBak(){const prev=store.raw('fw.stats');if(!prev)return;try{const p=cleanStats(JSON.parse(prev));if(!p)return;
+  const ob=store.raw('fw.stats.bak');let o=null;try{o=ob?cleanStats(JSON.parse(ob)):null;}catch(e){}
+  if(!o||amount(p)>=amount(o))store.put('fw.stats.bak',prev);}catch(e){}}
 function saveST(){
   if(stExt){stExt=false;const t=readStats();if(t)mergeStats(ST,t);}
-  if(!stBak){stBak=true;const prev=store.raw('fw.stats');if(prev){try{if(cleanStats(JSON.parse(prev)))store.put('fw.stats.bak',prev);}catch(e){}}}
+  if(!stBak){stBak=true;keepBak();}
   ST.v=FWV;return store.set('fw.stats',ST);}
 
 let Q=null, marks=[], locked=false, timer=null, lastKey=null, lastPc=null, prevMarkKeys=new Set();
@@ -1970,13 +1984,13 @@ $('#bk-load').onclick=()=>{
   bkMsg(when?'Backup from '+when+'.':'');$('#bk-confirm').hidden=false;};
 $('#bk-no').onclick=()=>{bkPending=null;$('#bk-confirm').hidden=true;bkMsg('');};
 $('#bk-yes').onclick=()=>{const d=bkPending;if(!d)return;
-  {const prev=store.raw('fw.stats');if(prev){try{if(cleanStats(JSON.parse(prev)))store.put('fw.stats.bak',prev);}catch(e){}}}stBak=true;stExt=false;
+  keepBak();stBak=true;stExt=false;
   S=d.settings;ST=d.stats;L=d.learn;saveS();saveST();saveL();bkLast();
   bkPending=null;$('#bk-confirm').hidden=true;$('#bk-text').value='';sess.n=sess.c=sess.streak=sess.ms=0;
   buildPad();syncMute();renderProgress();bkMsg('Progress restored.','ok');};
 $('#reset').onclick=()=>{$('#confirm').hidden=false;};
 $('#reset-no').onclick=()=>{$('#confirm').hidden=true;};
-$('#reset-yes').onclick=()=>{{const prev=store.raw('fw.stats');if(prev){try{if(cleanStats(JSON.parse(prev)))store.put('fw.stats.bak',prev);}catch(e){}}}stBak=true;ST={cells:{},best:0,bkAt:ST.bkAt};sess.n=sess.c=sess.streak=sess.ms=0;saveST();$('#confirm').hidden=true;renderProgress();};
+$('#reset-yes').onclick=()=>{keepBak();stBak=true;ST={cells:{},best:0,bkAt:ST.bkAt};sess.n=sess.c=sess.streak=sess.ms=0;saveST();$('#confirm').hidden=true;renderProgress();};
 document.addEventListener('keydown',e=>{if(!$('#sheet').hidden&&(e.key==='Enter'||e.key===' ')){e.preventDefault();if(Q&&Q.mode==='play'&&Q.await)grade(true);else newQ();return;}if(!$('#sheet').hidden)return;if(view!=='practise'||!Q||Q.mode!=='name'||e.metaKey||e.ctrlKey)return;const i='CDEFGAB'.indexOf(e.key.toUpperCase());
   if(i>-1&&e.key.length===1){const b=document.querySelector(`.key[data-pc="${LPC[i]}"]`);answerName(LPC[i],b);}});
 let appW=0;if('ResizeObserver'in window){new ResizeObserver(()=>{const w=document.querySelector('.app').clientWidth;if(Math.abs(w-appW)<4)return;appW=w;if(view==='practise')drawPractice();if(view==='learn')renderLearn();if(view==='progress')renderProgress();}).observe(document.querySelector('.app'));}
@@ -1992,8 +2006,10 @@ function goBackup(){show('progress');const b=$('#bk-make');if(b){b.scrollIntoVie
 function askPersist(){try{if(!(navigator.storage&&navigator.storage.persisted))return;navigator.storage.persisted().then(p=>p?true:navigator.storage.persist()).then(r=>{PERSIST=!!r;bkLast();}).catch(()=>{});}catch(e){}}
 askPersist();document.addEventListener('pointerup',function once(){document.removeEventListener('pointerup',once,true);if(PERSIST!==true)askPersist();},true);
 noteFn=()=>{const el=$('#fw-note');if(!el)return;const n=NOTES[NOTES.length-1];if(!n){el.hidden=true;el.innerHTML='';return;}
-  el.hidden=false;el.innerHTML=`<p>${n.msg}</p><span class="fw-nb">${n.act==='bk'?'<button class="ghost" data-note="bk">Go to backup</button>':''}<button class="pw-link" data-note="x">Dismiss</button></span>`;};
-$('#fw-note').addEventListener('click',e=>{const b=e.target.closest('[data-note]');if(!b)return;if(b.dataset.note==='bk')goBackup();NOTES.pop();noteFn();});
+  el.hidden=false;el.innerHTML=`<p>${n.msg}</p><span class="fw-nb">${n.act==='bk'?'<button class="ghost" data-note="bk">Go to backup</button>':n.act==='rec'?'<button class="ghost" data-note="rec">Bring it back</button>':''}<button class="pw-link" data-note="x">Dismiss</button></span>`;};
+$('#fw-note').addEventListener('click',e=>{const b=e.target.closest('[data-note]');if(!b)return;if(b.dataset.note==='bk')goBackup();NOTES.pop();
+  if(b.dataset.note==='rec'&&RECOVER){keepBak();ST=Object.assign(RECOVER,{bkAt:ST.bkAt||RECOVER.bkAt});RECOVER=null;stBak=true;saveST();refreshViews();fwNote('Progress brought back. Copy a backup code from Progress now so there’s a spare.','bk');return;}
+  noteFn();});
 noteFn();
 function refreshViews(){if(view==='today')renderToday();else if(view==='progress')renderProgress();else if(view==='ear')renderEar();else if(view==='practise'&&!T)renderMeta();}
 window.addEventListener('storage',e=>{

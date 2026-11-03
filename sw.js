@@ -1,5 +1,5 @@
 /* Fretwise offline cache: the app, its icon and the Google fonts are stored on first visit; afterwards it opens with no connection. */
-const C='fretwise-v33';
+const C='fretwise-v34';
 const FONT_CSS='https://fonts.googleapis.com/css2?family=Damion&family=Big+Shoulders:opsz,wght@10..72,500..800&family=Barlow:wght@400;500;600&display=swap';
 self.addEventListener('install',e=>{e.waitUntil((async()=>{const c=await caches.open(C);
   await c.addAll(['./','index.html','manifest.webmanifest','icon-180.png','icon-512.png']);
